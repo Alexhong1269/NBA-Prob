@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NBA Prediction App</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Chart.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+
+  <style>
+    /* ── Reset & tokens ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --court:    #0F1114;
+      --surface:  #1A1D22;
+      --surface2: #22262D;
+      --border:   #2E3340;
+      --text:     #F0EDE6;
+      --muted:    #8A8F9E;
+      --orange:   #F7620A;
+      --gold:     #C9A84C;
+      --green:    #3DAB6E;
+      --red:      #E04A4A;
+
+      --font-display: 'Bebas Neue', sans-serif;
+      --font-body:    'Inter', sans-serif;
+
+      --nav-w: 220px;
+      --radius: 10px;
+      --transition: 180ms ease;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--court);
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Layout shell ───────────────────────────────────────────── */
+    .app-shell {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar nav ────────────────────────────────────────────── */
+    .sidebar {
+      width: var(--nav-w);
+      min-height: 100vh;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0; left: 0;
+      z-index: 100;
+      padding-bottom: 24px;
+    }
+
+    .sidebar-logo {
+      padding: 28px 24px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-logo .wordmark {
+      font-family: var(--font-display);
+      font-size: 22px;
+      letter-spacing: 0.04em;
+      color: var(--text);
+      line-height: 1.1;
+    }
+
+    .sidebar-logo .wordmark span {
+      color: var(--orange);
+    }
+
+    .sidebar-logo .tagline {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+
+    /* Jersey-number nav items — the signature element */
+    nav {
+      flex: 1;
+      padding: 16px 0;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 20px 10px 16px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: background var(--transition), border-color var(--transition);
+      text-decoration: none;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .nav-item:hover {
+      background: var(--surface2);
+      color: var(--text);
+    }
+
+    .nav-item.active {
+      border-left-color: var(--orange);
+      background: var(--surface2);
+      color: var(--text);
+    }
+
+    .nav-item .jersey-num {
+      font-family: var(--font-display);
+      font-size: 28px;
+      line-height: 1;
+      color: var(--border);
+      min-width: 32px;
+      transition: color var(--transition);
+    }
+
+    .nav-item.active .jersey-num,
+    .nav-item:hover .jersey-num {
+      color: var(--orange);
+    }
+
+    .nav-item .nav-label {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .nav-item .nav-label strong {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      line-height: 1.3;
+    }
+
+    .nav-item .nav-label small {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* Sidebar footer — API status */
+    .sidebar-footer {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+    }
+
+    .api-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+      transition: background 0.4s;
+    }
+
+    .status-dot.up   { background: var(--green); }
+    .status-dot.down { background: var(--red); }
+
+    /* ── Main content ───────────────────────────────────────────── */
+    .main-content {
+      margin-left: var(--nav-w);
+      flex: 1;
+      padding: 36px 40px;
+      min-height: 100vh;
+    }
+
+    /* Page transition */
+    .page {
+      display: none;
+      animation: fadeIn 200ms ease forwards;
+    }
+
+    .page.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Shared components ──────────────────────────────────────── */
+
+    /* Page header */
+    .page-header {
+      margin-bottom: 32px;
+    }
+
+    .page-header h1 {
+      font-family: var(--font-display);
+      font-size: 42px;
+      letter-spacing: 0.03em;
+      line-height: 1;
+      color: var(--text);
+    }
+
+    .page-header h1 span {
+      color: var(--orange);
+    }
+
+    .page-header p {
+      color: var(--muted);
+      font-size: 14px;
+      margin-top: 6px;
+    }
+
+    /* Card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    /* Two-column grid */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    /* Stat pill */
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .stat-row:last-child { border-bottom: none; }
+
+    .stat-label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .stat-value {
+      font-family: var(--font-display);
+      font-size: 22px;
+      color: var(--text);
+      letter-spacing: 0.02em;
+    }
+
+    .stat-value.accent { color: var(--orange); }
+    .stat-value.gold   { color: var(--gold); }
+    .stat-value.green  { color: var(--green); }
+    .stat-value.red    { color: var(--red); }
+
+    /* Win probability bar */
+    .prob-bar-wrap {
+      margin: 20px 0;
+    }
+
+    .prob-teams {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .prob-team {
+      font-family: var(--font-display);
+      font-size: 32px;
+      letter-spacing: 0.04em;
+    }
+
+    .prob-team .pct {
+      font-size: 18px;
+      color: var(--muted);
+      margin-left: 4px;
+    }
+
+    .prob-bar {
+      height: 10px;
+      border-radius: 5px;
+      background: var(--border);
+      overflow: hidden;
+      display: flex;
+    }
+
+    .prob-bar .home-fill {
+      background: var(--orange);
+      border-radius: 5px 0 0 5px;
+      transition: width 0.6s cubic-bezier(.22,1,.36,1);
+    }
+
+    .prob-bar .away-fill {
+      background: var(--gold);
+      border-radius: 0 5px 5px 0;
+      flex: 1;
+    }
+
+    /* Form controls */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .form-select,
+    .form-input {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 14px;
+      padding: 10px 14px;
+      outline: none;
+      transition: border-color var(--transition);
+      appearance: none;
+    }
+
+    .form-select:focus,
+    .form-input:focus {
+      border-color: var(--orange);
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 22px;
+      border-radius: 6px;
+      font-family: var(--font-body);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity var(--transition), transform var(--transition);
+    }
+
+    .btn:hover   { opacity: 0.88; }
+    .btn:active  { transform: scale(0.97); }
+
+    .btn-primary {
+      background: var(--orange);
+      color: #fff;
+    }
+
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-sm {
+      padding: 7px 14px;
+      font-size: 12px;
+    }
+
+    /* Loading / empty states */
+    .state-empty {
+      text-align: center;
+      padding: 48px 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .state-empty .icon {
+      font-size: 32px;
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    .loading-bar {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+
+    .loading-bar::after {
+      content: '';
+      display: block;
+      height: 100%;
+      width: 40%;
+      background: var(--orange);
+      border-radius: 2px;
+      animation: slide 1s ease-in-out infinite;
+    }
+
+    @keyframes slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+
+    /* Badge */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .badge-orange { background: rgba(247,98,10,0.15); color: var(--orange); }
+    .badge-gold   { background: rgba(201,168,76,0.15); color: var(--gold); }
+    .badge-green  { background: rgba(61,171,110,0.15); color: var(--green); }
+    .badge-muted  { background: var(--surface2); color: var(--muted); }
+
+    /* Table */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .data-table th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 0 12px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .data-table td {
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .data-table tr:last-child td { border-bottom: none; }
+
+    .data-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+    /* ── Mobile bottom nav ──────────────────────────────────────── */
+    .bottom-nav {
+      display: none;
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      z-index: 100;
+      padding: 8px 0 env(safe-area-inset-bottom);
+    }
+
+    .bottom-nav-inner {
+      display: flex;
+      justify-content: space-around;
+    }
+
+    .bottom-nav-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      padding: 6px 16px;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 11px;
+      transition: color var(--transition);
+    }
+
+    .bottom-nav-item .jersey-num {
+      font-family: var(--font-display);
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    .bottom-nav-item.active,
+    .bottom-nav-item:hover {
+      color: var(--orange);
+    }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .sidebar      { display: none; }
+      .bottom-nav   { display: block; }
+      .main-content { margin-left: 0; padding: 24px 16px 80px; }
+      .grid-2       { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .page { animation: none; }
+      .loading-bar::after { animation: none; }
+      .prob-bar .home-fill { transition: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-shell">
+
+  <!-- ── Sidebar ──────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="wordmark">COURT<span>IQ</span></div>
+      <div class="tagline">NBA Prediction Engine</div>
+    </div>
+
+    <nav id="main-nav">
+      <div class="nav-item active" data-page="games">
+        <span class="jersey-num">01</span>
+        <div class="nav-label">
+          <strong>Games</strong>
+          <small>Win probability</small>
+        </div>
+      </div>
+      <div class="nav-item" data-page="players">
+        <span class="jersey-num">02</span>
+        <div class="nav-label">
+          <strong>Players</strong>
+          <small>Stat projections</small>
+        </div>
+      </div>
+      <div class="nav-item" data-page="h2h">
+        <span class="jersey-num">03</span>
+        <div class="nav-label">
+          <strong>Head-to-Head</strong>
+          <small>Team matchup history</small>
+        </div>
+      </div>
+      <div class="nav-item" data-page="accuracy">
+        <span class="jersey-num">04</span>
+        <div class="nav-label">
+          <strong>Accuracy</strong>
+          <small>Model performance</small>
+        </div>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="api-status">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-label">Connecting...</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────── -->
+  <main class="main-content">
+
+    <!-- Pages injected by each page JS module -->
+    <div id="page-games"    class="page active"></div>
+    <div id="page-players"  class="page"></div>
+    <div id="page-h2h"      class="page"></div>
+    <div id="page-accuracy" class="page"></div>
+
+  </main>
+</div>
+
+<!-- ── Mobile bottom nav ──────────────────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-inner">
+    <div class="bottom-nav-item active" data-page="games">
+      <span class="jersey-num">01</span>
+      <span>Games</span>
+    </div>
+    <div class="bottom-nav-item" data-page="players">
+      <span class="jersey-num">02</span>
+      <span>Players</span>
+    </div>
+    <div class="bottom-nav-item" data-page="h2h">
+      <span class="jersey-num">03</span>
+      <span>H2H</span>
+    </div>
+    <div class="bottom-nav-item" data-page="accuracy">
+      <span class="jersey-num">04</span>
+      <span>Accuracy</span>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Page modules ──────────────────────────────────────────── -->
+<script src="pages/games.js"></script>
+<script src="pages/players.js"></script>
+<script src="pages/h2h.js"></script>
+<script src="pages/accuracy.js"></script>
+
+<script>
+  // ── API base URL ──────────────────────────────────────────────
+  const API = 'http://127.0.0.1:5000/api';
+  window.API = API;
+
+  // ── Health check ─────────────────────────────────────────────
+  async function checkHealth() {
+    const dot   = document.getElementById('status-dot');
+    const label = document.getElementById('status-label');
+    try {
+      const res  = await fetch(`${API}/health`);
+      const data = await res.json();
+      if (data.status === 'healthy') {
+        dot.className   = 'status-dot up';
+        label.textContent = 'API connected';
+      } else {
+        throw new Error();
+      }
+    } catch {
+      dot.className   = 'status-dot down';
+      label.textContent = 'API offline';
+    }
+  }
+
+  checkHealth();
+  setInterval(checkHealth, 30000);
+
+  // ── Page routing ─────────────────────────────────────────────
+  function navigateTo(pageId) {
+    // Hide all pages
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    // Deactivate all nav items
+    document.querySelectorAll('.nav-item, .bottom-nav-item').forEach(n => n.classList.remove('active'));
+
+    // Show target page
+    const page = document.getElementById(`page-${pageId}`);
+    if (page) page.classList.add('active');
+
+    // Activate nav items
+    document.querySelectorAll(`[data-page="${pageId}"]`).forEach(n => n.classList.add('active'));
+
+    // Call the page's init function if it exists and hasn't run yet
+    const initFn = window[`init_${pageId}`];
+    if (typeof initFn === 'function') {
+      initFn();
+      // Mark as initialized so we don't re-run on every tab switch
+      window[`init_${pageId}`] = null;
+    }
+  }
+
+  // Attach nav click handlers
+  document.querySelectorAll('.nav-item, .bottom-nav-item').forEach(item => {
+    item.addEventListener('click', () => navigateTo(item.dataset.page));
+  });
+
+  // Init first page on load
+  navigateTo('games');
+</script>
+
+</body>
+</html>
