@@ -2,152 +2,336 @@ import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-# We'll import these as we build them out in the next steps
-# from database.cache import get_upcoming_games, get_h2h_history, get_accuracy_metrics
-# from models.game_predictor import predict_game_outcome
-# from models.player_predictor import project_player_stats
-# from models.trainer import run_retraining_pipeline
+from backend.data.cache import (
+    get_db_connection,
+    init_db,
+)
+from backend.models.game_predictor import predict_game, predict_batch
+from backend.models.player_predictor import predict_player_game, predict_team_players
+from backend.models.trainer import retrain_all
+from backend.models.accuracy import get_full_accuracy_summary, log_prediction
 
 app = Flask(__name__)
-CORS(app)  # Allows our frontend to talk to the backend without cross-origin issues
+CORS(app)
 
-# Quick health check route
-@app.route('/api/health', College=['GET'])
+# Ensure the database and tables exist on startup
+init_db()
+
+# Simple admin token for the retrain endpoint — set via environment variable.
+# Default is 'local-dev-only' so it works out of the box locally.
+ADMIN_TOKEN = os.environ.get('NBA_ADMIN_TOKEN', 'local-dev-only')
+
+
+
+@app.route('/api/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "message": "NBA Prediction API is running!"})
+    """Confirms the API is running and the DB is reachable."""
+    try:
+        conn = get_db_connection()
+        conn.execute('SELECT 1')
+        conn.close()
+        db_status = 'connected'
+    except Exception:
+        db_status = 'unreachable'
 
-### --- GAME PREDICTIONS --- ###
+    return jsonify({
+        'status': 'healthy',
+        'db': db_status,
+        'message': 'NBA Prediction API is running.',
+    })
+
+
 
 @app.route('/api/games/upcoming', methods=['GET'])
 def upcoming_games():
-    """Fetches upcoming scheduled games for the user to select from."""
+    """Returns all SCHEDULED games from the database cache."""
     try:
-        # TODO: Pull these from our SQLite database cache once Phase 1 is done
-        # games = get_upcoming_games()
-        mock_games = [
-            {"game_id": "0022500001", "home_team": "BOS", "away_team": "NYK", "game_date": "2026-10-24"},
-            {"game_id": "0022500002", "home_team": "LAL", "away_team": "GSW", "game_date": "2026-10-24"}
-        ]
-        return jsonify({"success": True, "games": mock_games})
+        conn = get_db_connection()
+        rows = conn.execute(
+            '''SELECT game_id, game_date, home_team, away_team
+               FROM games
+               WHERE status = 'SCHEDULED'
+               ORDER BY game_date ASC'''
+        ).fetchall()
+        conn.close()
+
+        games = [dict(row) for row in rows]
+        return jsonify({'success': True, 'games': games})
+
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/games/predict', methods=['POST'])
-def predict_game():
-    """Predicts a matchup outcome based on home_team and away_team codes."""
+def predict_game_route():
+    """
+    Predicts the outcome of a matchup.
+
+    Request body: { home_team, away_team, game_id (optional) }
+
+    The caller must supply the engineered feature row — or this route builds
+    it from the DB. For now we pull the latest cached features for the two teams.
+    """
     data = request.get_json() or {}
     home_team = data.get('home_team')
     away_team = data.get('away_team')
+    game_id   = data.get('game_id')
 
     if not home_team or not away_team:
-        return jsonify({"success": False, "error": "Missing home_team or away_team"}), 400
+        return jsonify({'success': False, 'error': 'Missing home_team or away_team'}), 400
 
     try:
-        # TODO: Pass this to our XGBoost game model in Phase 2
-        # prediction = predict_game_outcome(home_team, away_team)
-        mock_prediction = {
-            "home_team": home_team,
-            "away_team": away_team,
-            "home_win_probability": 58.4,
-            "away_win_probability": 41.6,
-            "key_factors": [
-                {"factor": "Rest Advantage", "impact": "Home (+4.2%)"},
-                {"factor": "Recent Form (Last 5)", "impact": "Home (+2.1%)"}
-            ]
-        }
-        return jsonify({"success": True, "prediction": mock_prediction})
+        from backend.data.features import generate_training_datasets
+        team_features_df, _ = generate_training_datasets()
+
+        # Grab the most recent feature row for each team acting as home/away
+        home_row = (
+            team_features_df[team_features_df['team_home'] == home_team]
+            .sort_values('game_date')
+            .iloc[-1]
+            .to_dict()
+            if not team_features_df[team_features_df['team_home'] == home_team].empty
+            else {}
+        )
+
+        if not home_row:
+            return jsonify({'success': False,
+                            'error': f'No feature data found for {home_team}'}), 404
+
+        result = predict_game(home_team, away_team, home_row)
+
+        if not result:
+            return jsonify({'success': False,
+                            'error': 'Model not loaded. Run retrain.py first.'}), 503
+
+        # Log prediction if a game_id was supplied
+        if game_id:
+            log_prediction(
+                game_id=game_id,
+                game_date=home_row.get('game_date', ''),
+                home_team=home_team,
+                away_team=away_team,
+                predicted_winner=result['predicted_winner'],
+                home_win_prob=result['home_win_prob'],
+            )
+
+        return jsonify({'success': True, 'prediction': result})
+
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
-### --- PLAYER PROJECTIONS --- ###
+
+@app.route('/api/players/search', methods=['GET'])
+def search_players():
+    """
+    Searches player names in the database.
+    Query param: ?name=lebron
+    Returns matching player_id + player_name pairs.
+    """
+    name_query = request.args.get('name', '').strip()
+    if not name_query:
+        return jsonify({'success': False, 'error': 'Missing name parameter'}), 400
+
+    try:
+        conn = get_db_connection()
+        rows = conn.execute(
+            '''SELECT DISTINCT player_id, player_name, team_abbreviation
+               FROM player_stats
+               WHERE LOWER(player_name) LIKE ?
+               ORDER BY player_name ASC
+               LIMIT 20''',
+            (f'%{name_query.lower()}%',)
+        ).fetchall()
+        conn.close()
+
+        players = [dict(row) for row in rows]
+        return jsonify({'success': True, 'players': players})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/players/project', methods=['POST'])
 def project_player():
-    """Projects points, rebounds, assists, blocks, and steals for a player."""
-    data = request.get_json() or {}
-    player_name = data.get('player_name')
-    opponent = data.get('opponent')
+    """
+    Projects a player's stat line for an upcoming game.
 
-    if not player_name or not opponent:
-        return jsonify({"success": False, "error": "Missing player_name or opponent"}), 400
+    Request body: { player_id, opponent, is_home (0 or 1) }
+    """
+    data = request.get_json() or {}
+    player_id = data.get('player_id')
+    opponent  = data.get('opponent')
+    is_home   = int(data.get('is_home', 1))
+
+    if not player_id or not opponent:
+        return jsonify({'success': False, 'error': 'Missing player_id or opponent'}), 400
 
     try:
-        # TODO: Pass this to our multi-output or multi-model script in Phase 3
-        # projection = project_player_stats(player_name, opponent)
-        mock_projection = {
-            "player_name": player_name,
-            "opponent": opponent,
-            "projections": {"pts": 24.5, "reb": 6.2, "ast": 7.1, "stl": 1.2, "blk": 0.4},
-            "season_averages": {"pts": 26.1, "reb": 5.8, "ast": 6.4, "stl": 1.0, "blk": 0.5},
-            "h2h_historical_avg": {"pts": 22.1, "reb": 6.0, "ast": 7.5, "stl": 1.5, "blk": 0.2}
-        }
-        return jsonify({"success": True, "data": mock_projection})
+        import pandas as pd
+        from backend.data.features import build_player_features
+        from backend.data.cache import get_db_connection as gdb
+
+        conn = gdb()
+        df_players = pd.read_sql_query(
+            'SELECT * FROM player_stats ORDER BY game_date ASC', conn
+        )
+        conn.close()
+
+        df_features = build_player_features(df_players)
+
+        # Get the most recent feature row for this player
+        player_rows = df_features[df_features['player_id'] == int(player_id)]
+        if player_rows.empty:
+            return jsonify({'success': False,
+                            'error': f'No data found for player_id {player_id}'}), 404
+
+        player_row = player_rows.sort_values('game_date').iloc[-1].to_dict()
+
+        projection = predict_player_game(player_row, opponent, df_players, is_home)
+
+        if not projection:
+            return jsonify({'success': False,
+                            'error': 'Player models not loaded. Run retrain.py first.'}), 503
+
+        return jsonify({'success': True, 'data': projection})
+
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
-### --- HEAD-TO-HEAD AND ACCURACY DASHBOARD --- ###
+@app.route('/api/players/team', methods=['GET'])
+def project_team():
+    """
+    Projects stat lines for all players on a team for a given opponent.
+    Query params: ?team=BOS&opponent=MIA&is_home=1
+    """
+    team     = request.args.get('team')
+    opponent = request.args.get('opponent')
+    is_home  = int(request.args.get('is_home', 1))
+
+    if not team or not opponent:
+        return jsonify({'success': False, 'error': 'Missing team or opponent'}), 400
+
+    try:
+        import pandas as pd
+        from backend.data.features import build_player_features
+
+        conn = get_db_connection()
+        df_players = pd.read_sql_query(
+            'SELECT * FROM player_stats ORDER BY game_date ASC', conn
+        )
+        conn.close()
+
+        df_features = build_player_features(df_players)
+
+        # Get the latest row per player for this team
+        team_players_df = (
+            df_features[df_features['team_abbreviation'] == team]
+            .sort_values('game_date')
+            .groupby('player_id')
+            .last()
+            .reset_index()
+        )
+
+        if team_players_df.empty:
+            return jsonify({'success': False,
+                            'error': f'No player data found for team {team}'}), 404
+
+        team_players = team_players_df.to_dict(orient='records')
+        projections  = predict_team_players(team_players, opponent, df_players, is_home)
+
+        return jsonify({'success': True, 'team': team, 'projections': projections})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 
 @app.route('/api/h2h', methods=['GET'])
 def head_to_head():
-    """Gets historical matchup history between two specific teams."""
+    """
+    Returns historical head-to-head record between two teams.
+    Query params: ?team1=BOS&team2=MIA
+    """
     team1 = request.args.get('team1')
     team2 = request.args.get('team2')
 
     if not team1 or not team2:
-        return jsonify({"success": False, "error": "Missing team1 or team2 parameter"}), 400
+        return jsonify({'success': False, 'error': 'Missing team1 or team2'}), 400
 
     try:
-        # TODO: Pull historical head-to-head records from SQLite
-        # h2h_data = get_h2h_history(team1, team2)
-        mock_h2h = {
-            "summary": {"team1_wins": 6, "team2_wins": 4},
-            "last_5_games": [
-                {"date": "2025-03-12", "winner": team1, "score": "112-105"},
-                {"date": "2025-01-20", "winner": team2, "score": "98-104"}
-            ]
-        }
-        return jsonify({"success": True, "h2h": mock_h2h})
+        conn = get_db_connection()
+        rows = conn.execute(
+            '''SELECT game_date, home_team, away_team, home_pts, away_pts, wl_home
+               FROM games
+               WHERE status = 'FINAL'
+                 AND ((home_team = ? AND away_team = ?)
+                   OR (home_team = ? AND away_team = ?))
+               ORDER BY game_date DESC
+               LIMIT 20''',
+            (team1, team2, team2, team1)
+        ).fetchall()
+        conn.close()
+
+        games = [dict(row) for row in rows]
+
+        # Compute win totals
+        team1_wins = sum(
+            1 for g in games
+            if (g['home_team'] == team1 and g['wl_home'] == 'W') or
+               (g['away_team'] == team1 and g['wl_home'] == 'L')
+        )
+        team2_wins = len(games) - team1_wins
+
+        return jsonify({
+            'success': True,
+            'h2h': {
+                'summary': {team1: team1_wins, team2: team2_wins},
+                'games': games,
+            },
+        })
+
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 
 @app.route('/api/accuracy', methods=['GET'])
 def model_accuracy():
-    """Returns calibration and accuracy metrics over time for Chart.js."""
+    """
+    Returns the full accuracy summary for the dashboard.
+    Shape matches get_full_accuracy_summary() from accuracy.py:
+      { overall, by_team, rolling, calibration }
+    """
     try:
-        # TODO: Query prediction logs vs real outcomes from SQLite in Phase 6
-        # metrics = get_accuracy_metrics()
-        mock_metrics = {
-            "overall_accuracy": 64.2,
-            "timeline": [
-                {"week": "Week 1", "accuracy": 60.0},
-                {"week": "Week 2", "accuracy": 62.5},
-                {"week": "Week 3", "accuracy": 64.2}
-            ],
-            "calibration": {
-                "bin_60_70": {"predicted_avg": 65.0, "actual_win_rate": 63.8},
-                "bin_70_80": {"predicted_avg": 74.2, "actual_win_rate": 76.1}
-            }
-        }
-        return jsonify({"success": True, "metrics": mock_metrics})
+        summary = get_full_accuracy_summary()
+        return jsonify({'success': True, 'metrics': summary})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
-### --- RETRAINING TRIGGER --- ###
 
 @app.route('/api/admin/retrain', methods=['POST'])
 def trigger_retrain():
-    """Manually kicks off the pipeline to update models with newly logged real data."""
+    """
+    Kicks off a full model retrain using all data currently in the database.
+    Requires the X-Admin-Token header to match NBA_ADMIN_TOKEN env variable.
+    """
+    token = request.headers.get('X-Admin-Token', '')
+    if token != ADMIN_TOKEN:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
     try:
-        # TODO: Run the manual retrain logic from Phase 5
-        # run_retraining_pipeline()
-        return jsonify({"success": True, "message": "Model retraining pipeline executed successfully."})
+        summary = retrain_all(verbose=False)
+        return jsonify({
+            'success': True,
+            'message': 'Retrain complete.',
+            'summary': summary,
+        })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 if __name__ == '__main__':
-    # Running on local network port 5000
     app.run(host='127.0.0.1', port=5000, debug=True)
