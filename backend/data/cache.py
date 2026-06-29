@@ -56,6 +56,7 @@ def init_db():
             game_date TEXT,
             home_team TEXT,
             away_team TEXT,
+            predicted_winner TEXT,
             predicted_home_win_prob REAL,
             actual_winner TEXT,
             is_correct INTEGER -- 1 for true, 0 for false, NULL for pending
@@ -67,12 +68,28 @@ def init_db():
     print("SQLite database initialized successfully.")
 
 def save_games_to_db(df_games):
-    """Saves or updates a Pandas DataFrame of games into the SQLite database."""
+    """Saves or updates a Pandas DataFrame of games into the SQLite database.
+    Uses INSERT OR REPLACE so re-running seed or update scripts never crashes
+    on duplicate game_ids, and correctly updates SCHEDULED games to FINAL.
+    """
     if df_games.empty:
         return
     conn = get_db_connection()
-    # Using 'REPLACE' updates game scores/status if they change from SCHEDULED to FINAL
-    df_games.to_sql('games', conn, if_exists='append', index=False, chunksize=500, method='multi')
+    cursor = conn.cursor()
+    for _, row in df_games.iterrows():
+        cursor.execute('''
+            INSERT OR REPLACE INTO games
+                (game_id, game_date, home_team, away_team,
+                 home_pts, away_pts, wl_home, season, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            str(row['game_id']), row['game_date'],
+            row['home_team'], row['away_team'],
+            row.get('home_pts'), row.get('away_pts'),
+            row.get('wl_home'), row.get('season'),
+            row.get('status', 'FINAL'),
+        ))
+    conn.commit()
     conn.close()
 
 def save_player_stats_to_db(df_stats):
