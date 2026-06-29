@@ -1,5 +1,5 @@
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from backend.data.cache import (
@@ -11,7 +11,9 @@ from backend.models.player_predictor import predict_player_game, predict_team_pl
 from backend.models.trainer import retrain_all
 from backend.models.accuracy import get_full_accuracy_summary, log_prediction
 
-app = Flask(__name__)
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), 'frontend')
+
+app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path='')
 CORS(app)
 
 # Ensure the database and tables exist on startup
@@ -22,6 +24,25 @@ init_db()
 ADMIN_TOKEN = os.environ.get('NBA_ADMIN_TOKEN', 'local-dev-only')
 
 
+# ---------------------------------------------------------------------------
+# Serve frontend
+# ---------------------------------------------------------------------------
+
+@app.route('/')
+def serve_index():
+    """Serves the main frontend shell."""
+    return send_from_directory(FRONTEND_DIR, 'index.html')
+
+
+@app.route('/pages/<path:filename>')
+def serve_pages(filename):
+    """Serves JS page modules from frontend/pages/."""
+    return send_from_directory(os.path.join(FRONTEND_DIR, 'pages'), filename)
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -41,6 +62,9 @@ def health_check():
     })
 
 
+# ---------------------------------------------------------------------------
+# Game predictions
+# ---------------------------------------------------------------------------
 
 @app.route('/api/games/upcoming', methods=['GET'])
 def upcoming_games():
@@ -121,6 +145,9 @@ def predict_game_route():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Player projections
+# ---------------------------------------------------------------------------
 
 @app.route('/api/players/search', methods=['GET'])
 def search_players():
@@ -247,6 +274,9 @@ def project_team():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Head-to-head
+# ---------------------------------------------------------------------------
 
 @app.route('/api/h2h', methods=['GET'])
 def head_to_head():
@@ -296,6 +326,9 @@ def head_to_head():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Accuracy dashboard
+# ---------------------------------------------------------------------------
 
 @app.route('/api/accuracy', methods=['GET'])
 def model_accuracy():
@@ -311,6 +344,9 @@ def model_accuracy():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Admin — manual retrain trigger
+# ---------------------------------------------------------------------------
 
 @app.route('/api/admin/retrain', methods=['POST'])
 def trigger_retrain():
@@ -332,6 +368,10 @@ def trigger_retrain():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000, debug=True)
