@@ -10,7 +10,7 @@ def fetch_season_games(season_year):
     print(f"Fetching team game logs for season: {season_year}...")
     try:
         # Pull logs from the NBA api
-        log = leaguegamelog.LeagueGameLog(season=season_year, league_id_nullable='00')
+        log = leaguegamelog.LeagueGameLog(season=season_year, league_id='00')
         df = log.get_data_frames()[0]
         
         if df.empty:
