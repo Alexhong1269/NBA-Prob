@@ -2,6 +2,20 @@ import time
 import pandas as pd
 from nba_api.stats.endpoints import leaguegamelog, boxscoretraditionalv2
 
+NBA_HEADERS = {
+    'User-Agent': (
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/120.0.0.0 Safari/537.36'
+    ),
+    'Referer': 'https://www.nba.com/',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://www.nba.com',
+    'x-nba-stats-origin': 'stats',
+    'x-nba-stats-token': 'true',
+}
+
 def fetch_season_games(season_year):
     """
     Fetches all base team game logs for a given season (e.g., '2024-25').
